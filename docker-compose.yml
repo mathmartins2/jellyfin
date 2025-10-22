@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  jellyfin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jellyfin
+    restart: unless-stopped
+    ports:
+      - "8096:8096"
+    volumes:
+      - jellyfin_data:/data
+
+volumes:
+  jellyfin_data:
+    driver: local
