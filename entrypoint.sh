@@ -1,45 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Esperado via ENV:
+# ==============================
+# VARIÁVEIS ESPERADAS
+# ==============================
 # RCLONE_CONFIG_GDRIVE_TYPE=drive
-# RCLONE_CONFIG_GDRIVE_SCOPE=drive.readonly  (ou drive)
+# RCLONE_CONFIG_GDRIVE_SCOPE=drive.readonly
 # RCLONE_CONFIG_GDRIVE_TOKEN={JSON do rclone authorize}
 # (Opcional) RCLONE_CONFIG_GDRIVE_TEAM_DRIVE=ID_DO_SHARED_DRIVE
-# MEDIA_FOLDER_ID=ID_DA_PASTA_NO_DRIVE (ex.: 1-HX0p5jsfRpvf3kQSNaFLawRzUABly_T)
+# MEDIA_FOLDER_ID=ID_DA_PASTA_NO_DRIVE
 # MEDIA_PATH=/data/media
-# SYNC_MODE=copy|sync   (default: copy)
-# SYNC_ON_BOOT=true|false (default: true)
-# SYNC_INTERVAL_MIN=0   (0 = sem loop; >0 = sync periódico em minutos)
+# SYNC_MODE=copy|sync
+# SYNC_ON_BOOT=true|false
+# SYNC_INTERVAL_MIN=0
+# FORCE_COPY=true|false
+# ==============================
 
 : "${MEDIA_PATH:=/data/media}"
 : "${SYNC_MODE:=copy}"
 : "${SYNC_ON_BOOT:=true}"
 : "${SYNC_INTERVAL_MIN:=0}"
+: "${FORCE_COPY:=false}"
 
-mkdir -p "$MEDIA_PATH"
+# Cria diretórios persistentes
+mkdir -p /data/{data,config,cache,media}
 
-log() { printf '%s %s\n' "[$(date +'%Y-%m-%d %H:%M:%S')]" "$*"; }
-
+# =================================
+# FUNÇÃO DE SINCRONIZAÇÃO DO GDRIVE
+# =================================
 do_sync() {
   if [[ -n "${MEDIA_FOLDER_ID:-}" ]]; then
-    log "[rclone] ${SYNC_MODE} do Google Drive (folderId=${MEDIA_FOLDER_ID}) → ${MEDIA_PATH}"
-    # Usa somente variáveis de ENV; ok não ter rclone.conf
+    echo "[rclone] ${SYNC_MODE^^} do Google Drive (folderId=${MEDIA_FOLDER_ID}) → ${MEDIA_PATH}"
+
+    EXTRA_FLAGS=""
+    if [[ "${FORCE_COPY}" == "true" ]]; then
+      EXTRA_FLAGS="--ignore-times --checksum"
+    else
+      EXTRA_FLAGS="--ignore-existing"
+    fi
+
     rclone "${SYNC_MODE}" "gdrive:" "${MEDIA_PATH}" \
       --drive-root-folder-id "${MEDIA_FOLDER_ID}" \
-      --fast-list --transfers=4 --checkers=8 --progress --update || \
-      log "[rclone] aviso: falha no sync (seguindo sem parar o Jellyfin)"
+      --fast-list --transfers=4 --checkers=8 --progress --update ${EXTRA_FLAGS} || \
+      echo "[rclone] aviso: falha no sync, seguindo..."
   else
-    log "[rclone] MEDIA_FOLDER_ID não definido; pulando sync."
+    echo "[rclone] MEDIA_FOLDER_ID não definido; pulando sync."
   fi
 }
 
-# Sync inicial
+# =================================
+# EXECUTA SYNC NO BOOT
+# =================================
 if [[ "${SYNC_ON_BOOT}" == "true" ]]; then
   do_sync || true
 fi
 
-# Sync periódico
+# =================================
+# LOOP PERIÓDICO (OPCIONAL)
+# =================================
 if [[ "${SYNC_INTERVAL_MIN}" -gt 0 ]]; then
   (
     while true; do
@@ -49,19 +67,24 @@ if [[ "${SYNC_INTERVAL_MIN}" -gt 0 ]]; then
   ) &
 fi
 
-# Descobre o binário do Jellyfin na imagem
+# =================================
+# INICIA O JELLYFIN
+# =================================
 JELLYFIN_BIN="$(command -v jellyfin || true)"
-if [[ -z "${JELLYFIN_BIN}" ]]; then
+if [[ -z "$JELLYFIN_BIN" ]]; then
   for p in /usr/lib/jellyfin/bin/jellyfin /jellyfin/jellyfin /usr/bin/jellyfin; do
     [[ -x "$p" ]] && JELLYFIN_BIN="$p" && break
   done
 fi
 
-if [[ -z "${JELLYFIN_BIN}" ]]; then
-  log "[erro] Jellyfin não encontrado no container."
-  log "Dica: você está realmente usando a imagem 'jellyfin/jellyfin:latest'?"
+if [[ -z "$JELLYFIN_BIN" ]]; then
+  echo "[ERRO] Jellyfin não encontrado na imagem."
   exit 1
 fi
 
-log "[jellyfin] iniciando: ${JELLYFIN_BIN} $*"
-exec "${JELLYFIN_BIN}" "$@"
+echo "[jellyfin] iniciando com config persistente..."
+exec "$JELLYFIN_BIN" \
+  --datadir /data/data \
+  --configdir /data/config \
+  --cachedir /data/cache \
+  "$@"
